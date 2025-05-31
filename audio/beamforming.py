@@ -8,11 +8,28 @@ import sounddevice as sd
 SPEED_OF_SOUND_M_S = 343.0
 
 # Load audio data from file and write it as a numpy array
+def load_audio_file(file_path):
+    """Load an audio file and return the audio data and sample rate."""
+    audio_data, sample_rate = sf.read(file_path)
+    # If the audio is too high of a sample rate, downsample it
+    while sample_rate > 24000:
+        audio_data = audio_data[::2]
+        sample_rate //= 2
+    return audio_data, sample_rate
+
 track1_file = "/Users/droz/Documents/GitHub/misc/audio/samples/subject1.wav"
 track2_file = "/Users/droz/Documents/GitHub/misc/audio/samples/subject2.wav"
+track1, sr1 = load_audio_file(track1_file)
+track2, sr2 = load_audio_file(track2_file)
 
-track1, sr1 = sf.read(track1_file)
-track2, sr2 = sf.read(track2_file)
+n_shifts = int(0.02 * sr1)  # Number of samples to shift
+time_shift = np.ones(n_shifts) / n_shifts
+
+#track1 = np.convolve(track1, time_shift, mode='same')
+#sd.play(track1, samplerate=sr1)
+#sd.wait()  # Wait until the audio is finished playing
+#kjhjkhkhk
+
 # Ensure both tracks have the same sample rate
 if sr1 != sr2:
     raise ValueError("Sample rates of the two tracks do not match.")
@@ -31,13 +48,13 @@ t = np.linspace(0, tmax, num=len(track1))  # time vector
 num_samples = t.shape[0]  # total number of samples in the output
 
 # The location of the two points we are trying to project to
-target1 = np.array([0, 0, 5])  # meters
-target2 = np.array([2, 0, 5])  # meters
+target1 = np.array([-1, 0, 10])  # meters
+target2 = np.array([1, 0, 10])  # meters
 
 # The position of the listener in the room
 # For now we are just moving the listener between two points in space
-point1 = np.array([-3, 0, 5])  # meters
-point2 = np.array([3, 0, 5])  # meters
+point1 = np.array([-3, 0, 10])  # meters
+point2 = np.array([3, 0, 10])  # meters
 listener_pos = np.linspace(point1, point2, num=num_samples)
 
 # This is the position of each speaker in the array. They are arranged on a regular grid.
@@ -52,35 +69,39 @@ speakers_y = speakers_y.flatten()
 speakers_z = np.zeros_like(speakers_x)  # Assuming all speakers are at z=0
 speakers_pos = np.vstack((speakers_x, speakers_y, speakers_z)).T
 
-def propagation_delays(speaker_pos, targets, speed_of_sound):
+def propagation_effects(speaker_pos, targets, speed_of_sound):
     """ Calculate the propagation delay in seconds for a speaker based on the distance to the target point
     Args:
         speaker_pos (np.ndarray): speaker position (3).
         target_pos (np.ndarray): Target positions, as a function of time (3, N).
         speed_of_sound (float): Speed of sound in m/s.
+    Returns:
+        np.ndarray: Delay in seconds
+        np.ndarray: Attenuation factor based on distance.
     """
     if targets.ndim == 1:
         distances = np.linalg.norm(speaker_pos - targets, axis=0)
     else:
         distances = np.linalg.norm(speaker_pos - targets, axis=1)
     delays = distances / speed_of_sound
-    return delays
+    attenuations = 1 / distances**2  # Simple attenuation model
+    return delays, attenuations
 
 # For each speaker, we compute the waveform at our current position in time
 audio = np.zeros(num_samples)
+
 for speaker_pos in speakers_pos:
-    beamforming_delay1 = - propagation_delays(speaker_pos, target1, SPEED_OF_SOUND_M_S)
-    beamforming_delay2 = - propagation_delays(speaker_pos, target2, SPEED_OF_SOUND_M_S)
+    beamforming_delay1, beamforming_attenuations1 = propagation_effects(speaker_pos, target1, SPEED_OF_SOUND_M_S)
+    beamforming_delay2, beamforming_attenuations2 = propagation_effects(speaker_pos, target2, SPEED_OF_SOUND_M_S)
 
     # compute the delay for the listener position
-    listener_delays = propagation_delays(speaker_pos, listener_pos, SPEED_OF_SOUND_M_S)
+    listener_delays, attenuations = propagation_effects(speaker_pos, listener_pos, SPEED_OF_SOUND_M_S)
     # Sample the audio track at the appropriate time for each speaker
-    delays1 = beamforming_delay1 + listener_delays
-    delays2 = beamforming_delay2 + listener_delays
-    audio += np.interp(t, t - delays1, track1)
-    #audio += np.interp(t, t - delays2, track2, left=0, right=0)
-
-audio /= len(speakers_pos)  # Normalize by the number of speakers
+    delays1 = - beamforming_delay1 + listener_delays
+    delays2 = - beamforming_delay2 + listener_delays
+    audio += attenuations * np.interp(t, t - delays1, track1 / beamforming_attenuations1, left=0, right=0)
+    audio += attenuations * np.interp(t, t - delays2, track2 / beamforming_attenuations2, left=0, right=0)
+audio /= len(speakers_pos)  # Normalize by the total attenuations
 
 # Playback the audio tracks
 sd.play(audio, samplerate=sr1)
