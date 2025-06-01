@@ -3,6 +3,7 @@
 import numpy as np
 import soundfile as sf
 import sounddevice as sd
+from matplotlib import pyplot as plt
 
 # Speed of sound, in m/s
 SPEED_OF_SOUND_M_S = 343.0
@@ -17,18 +18,10 @@ def load_audio_file(file_path):
         sample_rate //= 2
     return audio_data, sample_rate
 
-track1_file = "/Users/droz/Documents/GitHub/misc/audio/samples/subject1.wav"
-track2_file = "/Users/droz/Documents/GitHub/misc/audio/samples/subject2.wav"
+track1_file = "/Users/droz/Documents/GitHub/misc/audio/samples/position1_rep.wav"
+track2_file = "/Users/droz/Documents/GitHub/misc/audio/samples/position2_rep.wav"
 track1, sr1 = load_audio_file(track1_file)
 track2, sr2 = load_audio_file(track2_file)
-
-n_shifts = int(0.02 * sr1)  # Number of samples to shift
-time_shift = np.ones(n_shifts) / n_shifts
-
-#track1 = np.convolve(track1, time_shift, mode='same')
-#sd.play(track1, samplerate=sr1)
-#sd.wait()  # Wait until the audio is finished playing
-#kjhjkhkhk
 
 # Ensure both tracks have the same sample rate
 if sr1 != sr2:
@@ -39,8 +32,8 @@ if len(track1) < len(track2):
 elif len(track2) < len(track1):
     track2 = np.pad(track2, (0, len(track1) - len(track2)), mode='constant')
 # Loop the tracks a few times
-track1 = np.tile(track1, 5)
-track2 = np.tile(track2, 5)
+track1 = np.tile(track1, 2)
+track2 = np.tile(track2, 2)
 
 # Use the longest of the two tracks to figure out the length of the output
 tmax = len(track1) / sr1  # in seconds
@@ -60,7 +53,8 @@ listener_pos = np.linspace(point1, point2, num=num_samples)
 # This is the position of each speaker in the array. They are arranged on a regular grid.
 num_speakers_x = 100
 num_speakers_y = 1
-speaker_spacing = 0.1  # meters
+speaker_array_size = 14  # meters
+speaker_spacing = speaker_array_size / num_speakers_x  # meters
 speakers_x = np.linspace(-num_speakers_x / 2 * speaker_spacing, num_speakers_x / 2 * speaker_spacing, num_speakers_x)
 speakers_y = np.linspace(-num_speakers_y / 2 * speaker_spacing, num_speakers_y / 2 * speaker_spacing, num_speakers_y)
 speakers_x, speakers_y = np.meshgrid(speakers_x, speakers_y)
@@ -90,18 +84,28 @@ def propagation_effects(speaker_pos, targets, speed_of_sound):
 # For each speaker, we compute the waveform at our current position in time
 audio = np.zeros(num_samples)
 
-for speaker_pos in speakers_pos:
-    beamforming_delay1, beamforming_attenuations1 = propagation_effects(speaker_pos, target1, SPEED_OF_SOUND_M_S)
-    beamforming_delay2, beamforming_attenuations2 = propagation_effects(speaker_pos, target2, SPEED_OF_SOUND_M_S)
+# The speaker array has a finite size and a very steep dropoff. IF we don't do anything
+# this will result into very pronounced side lobes. To mitigate that, we apply a windowing function
+# (basically we smoothly reduce the amplitude of the speakers at the edges of the array).
+# We use a modified hanning window (with a flat middle section).
+num_speakers = len(speakers_pos)
+window = np.hanning(num_speakers//2)
+window = np.concatenate((window[:num_speakers//4], np.ones(num_speakers//2), window[num_speakers//4:]))
+
+for i, (speaker_pos, window_val) in enumerate(zip(speakers_pos, window)):
+    print(f"Processing speaker ({i}/{num_speakers}) at position: {speaker_pos}")
+    beamforming_delay1, beamforming_attenuation1 = propagation_effects(speaker_pos, target1, SPEED_OF_SOUND_M_S)
+    beamforming_delay2, beamforming_attenuation2 = propagation_effects(speaker_pos, target2, SPEED_OF_SOUND_M_S)
 
     # compute the delay for the listener position
     listener_delays, attenuations = propagation_effects(speaker_pos, listener_pos, SPEED_OF_SOUND_M_S)
     # Sample the audio track at the appropriate time for each speaker
     delays1 = - beamforming_delay1 + listener_delays
     delays2 = - beamforming_delay2 + listener_delays
-    audio += attenuations * np.interp(t, t - delays1, track1 / beamforming_attenuations1, left=0, right=0)
-    audio += attenuations * np.interp(t, t - delays2, track2 / beamforming_attenuations2, left=0, right=0)
-audio /= len(speakers_pos)  # Normalize by the total attenuations
+    audio += window_val * attenuations * np.interp(t + delays1, t, track1 / beamforming_attenuation1, left=0, right=0)
+    audio += window_val * attenuations * np.interp(t + delays2, t, track2 / beamforming_attenuation2, left=0, right=0)
+
+audio /= sum(window)  # Normalize by the windowing function
 
 # Playback the audio tracks
 sd.play(audio, samplerate=sr1)
