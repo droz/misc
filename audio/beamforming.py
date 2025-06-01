@@ -62,6 +62,7 @@ speakers_x = speakers_x.flatten()
 speakers_y = speakers_y.flatten()
 speakers_z = np.zeros_like(speakers_x)  # Assuming all speakers are at z=0
 speakers_pos = np.vstack((speakers_x, speakers_y, speakers_z)).T
+num_speakers = len(speakers_pos)
 
 def propagation_effects(speaker_pos, targets, speed_of_sound):
     """ Calculate the propagation delay in seconds for a speaker based on the distance to the target point
@@ -87,10 +88,12 @@ audio = np.zeros(num_samples)
 # The speaker array has a finite size and a very steep dropoff. IF we don't do anything
 # this will result into very pronounced side lobes. To mitigate that, we apply a windowing function
 # (basically we smoothly reduce the amplitude of the speakers at the edges of the array).
-# We use a modified hanning window (with a flat middle section).
-num_speakers = len(speakers_pos)
-window = np.hanning(num_speakers//2)
-window = np.concatenate((window[:num_speakers//4], np.ones(num_speakers//2), window[num_speakers//4:]))
+
+# Simple hanning window
+window = np.hanning(num_speakers)
+# Modified hanning window (with a flat middle section). Should give us more overall power, but more side beams
+#window = np.hanning(num_speakers//2)
+#window = np.concatenate((window[:num_speakers//4], np.ones(num_speakers//2), window[num_speakers//4:]))
 
 for i, (speaker_pos, window_val) in enumerate(zip(speakers_pos, window)):
     print(f"Processing speaker ({i}/{num_speakers}) at position: {speaker_pos}")
